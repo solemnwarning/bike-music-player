@@ -1,0 +1,31 @@
+#!/bin/bash
+
+TOUCHDIR="/var/run"
+TIMEOUT="30"
+
+cd "$TOUCHDIR"
+
+flock -e "ftpd-wrapper.lock" -c "touch 'ftpd-wrapper.$$'"
+
+# Remount filesystem read-write so changes can be made over FTP.
+mount -o remount,rw /
+
+# Disable Bluetooth. The proximity of my Bluetooth and WiFi adapters causes the
+# WiFi to run very slowly or even stall.
+echo -e 'power off\nquit' | bluetoothctl > /dev/null 2>&1
+
+# Run in.ftpd to handle this connection. The process will exit once the
+# connection closes or idles for TIMEOUT seconds.
+/usr/sbin/in.ftpd -t "$TIMEOUT"
+
+flock -e "ftpd-wrapper.lock" -c "rm -f 'ftpd-wrapper.$$'"
+
+if [ -z "$(flock -e "ftpd-wrapper.lock" -c "find -name 'ftpd-wrapper.*' -not -name '*.lock' -print")" ]
+then
+	# Enable Bluetooth adapter
+	echo -e 'power on\nquit' | bluetoothctl > /dev/null 2>&1
+	
+	# Remount filesystem read-only and flush buffers
+	mount -o remount,ro /
+	sync
+fi

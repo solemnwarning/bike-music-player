@@ -1,0 +1,196 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use feature qw(state);
+
+use Device::BCM2835 qw(:all);
+use IO::Handle;
+use POSIX qw(:signal_h :sys_wait_h);
+use Time::HiRes qw(usleep);
+
+# Volume settings are in percent.
+my $INITIAL_VOLUME = 30;
+my $VOLUME_STEP    = 5;
+my $SOFTVOL_AMP    = 200; # Amplify sound 200%
+
+# These are the "BCM" numbers from the `gpio readall` command
+my $PREV_BUTTON    = 17;
+my $NEXT_BUTTON    = 18;
+my $VOLDOWN_BUTTON = 27;
+my $VOLUP_BUTTON   = 22;
+my $PAUSE_BUTTON   = 23;
+
+# GPIO poll interval, milliseconds
+my $POLL_INTERVAL = 50;
+
+Device::BCM2835::init()
+	or die "Couldn't initialise GPIO pins";
+
+my @buttons;
+
+sub setup_button
+{
+	my ($pin, $func) = @_;
+	
+	Device::BCM2835::gpio_fsel(   $pin, BCM2835_GPIO_FSEL_INPT);
+	Device::BCM2835::gpio_set_pud($pin, BCM2835_GPIO_PUD_DOWN);
+	
+	push(@buttons, [ $pin, undef, $func ]);
+}
+
+sub check_buttons
+{
+	my ($pin, $func) = @_;
+	
+	foreach my $button(@buttons)
+	{
+		my $state = Device::BCM2835::gpio_lev($button->[0]);
+		$button->[1] //= $state;
+		
+		if($state && !($button->[1]))
+		{
+			# Gone high
+			$button->[2]->();
+		}
+		elsif(!$state && $button->[1])
+		{
+			# Gone low
+		}
+		
+		$button->[1] = $state;
+	}
+}
+
+my @playlist = grep { $_ ne "" } split(m/\n/, qx(find /music/ -type f | shuf));
+
+my $volume = $INITIAL_VOLUME;
+my $song   = 0;
+
+my $mplayer_pid;
+my $mplayer_in;
+
+sub spawn_mplayer
+{
+	if(defined $mplayer_pid)
+	{
+		kill(SIGKILL, $mplayer_pid);
+		waitpid($mplayer_pid, 0);
+		
+		$mplayer_pid = undef;
+		$mplayer_in  = undef;
+	}
+	
+	print "Playing song $song: ", $playlist[$song], "\n";
+	
+	pipe(my $pr, $mplayer_in)
+		or die "pipe: $!";
+	
+	$mplayer_in->autoflush(1);
+	
+	$mplayer_pid = fork();
+	
+	if($mplayer_pid == -1)
+	{
+		die "fork: $!";
+	}
+	elsif($mplayer_pid == 0)
+	{
+		open(STDIN,  ">&".fileno($pr));
+		open(STDOUT, ">", "/dev/null");
+		open(STDERR, ">", "/dev/null");
+		
+		$pr         = undef;
+		$mplayer_in = undef;
+		
+		exec("mplayer",
+			"-softvol",
+			"-softvol-max" => $SOFTVOL_AMP,
+			"-volume"      => $volume,
+			"-volstep"     => $VOLUME_STEP,
+			$playlist[$song]);
+		
+		die "Couldn't exec mplayer: $!";
+	}
+}
+
+setup_button($PREV_BUTTON, sub
+{
+	state $last_pressed = 0;
+	
+	if(Time::HiRes::time() < $last_pressed + 2)
+	{
+		if(--$song == -1)
+		{
+			$song = $#playlist;
+		}
+	}
+	
+	$last_pressed = Time::HiRes::time();
+	
+	spawn_mplayer();
+});
+
+setup_button($NEXT_BUTTON, sub
+{
+	inc_song();
+	spawn_mplayer();
+});
+
+sub inc_song
+{
+	if(++$song == (scalar @playlist))
+	{
+		$song = 0;
+	}
+}
+
+setup_button($VOLDOWN_BUTTON, sub
+{
+	if(($volume -= $VOLUME_STEP) < 0)
+	{
+		$volume = 0;
+	}
+	
+	print {$mplayer_in} "9" if(defined $mplayer_in);
+	
+	print "Volume lowered to $volume\n";
+});
+
+setup_button($VOLUP_BUTTON, sub
+{
+	if(($volume += $VOLUME_STEP) > 100)
+	{
+		$volume = 100;
+	}
+	
+	print {$mplayer_in} "0" if(defined $mplayer_in);
+	
+	print "Volume raised to $volume\n";
+});
+
+setup_button($PAUSE_BUTTON, sub
+{
+	print {$mplayer_in} "p" if(defined $mplayer_in);
+	
+	print "Play/Pause pressed\n";
+});
+
+$SIG{PIPE} = "IGNORE";
+
+spawn_mplayer();
+
+while(1)
+{
+	check_buttons();
+	
+	if(defined($mplayer_pid) && waitpid($mplayer_pid, WNOHANG) > 0)
+	{
+		# mplayer exited
+		inc_song();
+		spawn_mplayer();
+	}
+	
+	usleep($POLL_INTERVAL * 1000);
+}

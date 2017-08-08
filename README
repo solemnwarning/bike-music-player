@@ -1,0 +1,36 @@
+I made a made a music player for my bike.
+
+Still need to write a proper README, this is basically just notes to myself at this point.
+
+Audio:
+
+Disable flat volumes.
+
+cat > /etc/modprobe.d/blacklist-snd_bcm2835.conf << EOF
+blacklist snd_bcm2835
+EOF
+
+FTP:
+
+1) Install the 'rlinetd' and 'ftpd' packages.
+2) Copy ftpd-wrapper to /usr/local/bin/, ensure it is executable.
+3) Change the 'exec' line in /etc/rlinetd.d/ftp to run /usr/local/bin/ftpd-wrapper.
+4) Remove any users listed in /etc/ftpusers who you want to be able to log in as.
+
+Why rlinetd? Because the other inetd packages wanted to pull a lot of junk in.
+
+rc.local:
+
+pulseaudio -D
+
+(
+        while true
+        do
+                echo -e 'connect 00:23:01:04:68:2F\nquit' | bluetoothctl > /dev/null 2>&1
+                sleep 5
+        done
+) &
+
+/usr/local/bin/bmplayer &
+
+And make the filesystem read-only.
