@@ -23,7 +23,7 @@ my $VOLUP_BUTTON   = 22;
 my $PAUSE_BUTTON   = 23;
 
 # GPIO poll interval, milliseconds
-my $POLL_INTERVAL = 50;
+my $POLL_INTERVAL = 25;
 
 Device::BCM2835::init()
 	or die "Couldn't initialise GPIO pins";
@@ -47,19 +47,18 @@ sub check_buttons
 	foreach my $button(@buttons)
 	{
 		my $state = Device::BCM2835::gpio_lev($button->[0]);
-		$button->[1] //= $state;
+		$button->[1] //= 0;
 		
-		if($state && !($button->[1]))
+		if($state && ++($button->[1]) == 4)
 		{
-			# Gone high
+			# Been high for 4 polls (100-125ms)
 			$button->[2]->();
 		}
-		elsif(!$state && $button->[1])
+		elsif(!$state && $button->[1] > 0)
 		{
 			# Gone low
+			$button->[1] = 0;
 		}
-		
-		$button->[1] = $state;
 	}
 }
 
